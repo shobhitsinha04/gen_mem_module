@@ -227,6 +227,7 @@ class MemoryModule:
     # FOR MEMORY DELETION
     ##########################################################################################
     def calculate_information_density(self, summary: str):
+        #need to include a way to make it personal for each user and generate the values for the categories in persona generation 
         """
         Calculates the weighted information density of a summary.
         Output would be a float
