@@ -2,10 +2,11 @@ import json
 from typing import List, Tuple
 import openai
 from datetime import datetime, timedelta
-import spacy 
+import spacy
+import pandas as pd
 
 # OpenAI API 
-openai.api_key = 'api-key'
+openai.api_key = 'api key'
 
 class MemoryModule:
     def __init__(self):
@@ -33,7 +34,7 @@ class MemoryModule:
         # dict[str(persona id), dict[str, int](dict with the key as the date and the value is the number of the times the memory is accessed)]
 
         #  pre defined threshold 
-        self.memory_threshold = 0.5 
+        self.memory_threshold = 0 
         #YET TO DECIDE THE VALUE
 
         # Loading the spaCy model
@@ -43,7 +44,7 @@ class MemoryModule:
         """
         Stores the activities for a specific date and persona.
         activities_dict: A dictionary containing the activities for each persona and date.
-        Sample format: {"1": {"2024-07-10": [["sleep", "(00:00, 08:11)"], ...]}}
+        Sample format: {"1": {"2024-07-10": [["sports and exercise", "Gym", ["19:21", "20:02"]], ...]}}
         """
         for persona_id, dates in activities_dict.items():
             if persona_id not in self.daily_activities:
@@ -63,7 +64,7 @@ class MemoryModule:
         persona_id: The ID of the persona
         date: The date of the activities to be summarized.
         """
-        #retrieve the activities for each date and then converts the activties to a json string format for input to the LLM
+        #retrieve the activities for each date and then converts the activities to a json string format for input to the LLM
         activities = self.daily_activities.get(persona_id, {}).get(date, [])
         activities_json = json.dumps(activities)
         
@@ -88,7 +89,7 @@ class MemoryModule:
             self.summaries[persona_id] = {}
         self.summaries[persona_id][date] = summary
 
-        # initalize the memory access counter for the date
+        # initialize the memory access counter for the date
         if persona_id not in self.memory_access_counter:
             self.memory_access_counter[persona_id] = {}
         self.memory_access_counter[persona_id][date] = 0
@@ -194,9 +195,6 @@ class MemoryModule:
 
                 monthly_summary[day] = response['choices'][0]['message']['content'].strip()
 
-                # formatted_response = response['choices'][0]['message']['content'].strip()
-                # # Ensuring the first letter of the response is capitalized
-                # monthly_summary[day] = formatted_response[0].upper() + formatted_response[1:]
 
         month_year = end_date_dt.strftime('%m-%Y')
         if persona_id not in self.monthly_summaries:
@@ -206,28 +204,133 @@ class MemoryModule:
                            
     ########################################################################################## 
     # FOR RETRIEVAL
-    ########################################################################################## 
-
-    def retrieve_tasks_by_intention(self, persona_id: str, intention: str):
-        """
-        Retrieves historical tasks based on a specific intention by searching through summaries.
-        persona_id: The ID of the persona.
-        intention: The intention to search for in the summaries.
-        returns a list of tuples containing the date and summary where the intention was found. Format will be List[Tuple[str, str]].
-        """
-        relevant_tasks = []
-        for date, summary in self.summaries.get(persona_id, {}).items():
-            if intention in summary:
-                # Increase the access frequency of that date
-                self.memory_access_counter[persona_id][date] += 1
-                relevant_tasks.append((date, summary))
-        return relevant_tasks
+    ##########################################################################################
     
+    def retrieve_activities_by_location(self, persona_id: str, activity_info: List):
+        """
+        Retrieves historical activities based on a specific activity information.
+        activity_info: List containing the intention, location category, and the time range.
+        Sample input: ["sports and exercise", "Gym", ["19:21", "20:02"]]
+        """
+        global cata_act
+
+        # getting the info from the list
+        intention = activity_info[0].lower()
+        location_category = activity_info[1].lower()
+        # time_range = activity_info[2]
+
+        locations = cata_act.get(location_category, [])
+        relevant_activities = []
+
+        for date, activities in self.daily_activities.get(persona_id, {}).items():
+            for activity in activities:
+                if activity[0] == intention and activity[1] in locations:
+                    relevant_activities.append(f"{activity[0]} at {activity[1]} on {date}")
+        return relevant_activities
+
+    def generate_recommendation(self, persona_id: str, activity_info: List):
+        """
+        Generates a recommendation based on the intention and location and also looks at historically where all the person has gone.
+        activity_info: List containing the intention, location category, and the time range.
+        Sample input: ["sports and exercise", "Gym", ["19:21", "20:02"]]
+        """
+        # getting the relevant activities from history for the type of location category
+        relevant_activities = self.retrieve_activities_by_location(persona_id, activity_info)
+        activities_str = "; ".join(relevant_activities)
+        if not activities_str:
+            activities_str = "No relevant historical activities found."
+        
+        intention = activity_info[0]
+        location_category = activity_info[1]
+        # time_range = activity_info[2]
+        
+        # creating the prompt
+        prompt = (
+            f"The persona has an intention to '{intention}' and a preference for the '{location_category}' category. "
+            # f"The time range is from {time_range[0]} to {time_range[1]}. "
+            f"Based on historical activities: {activities_str}. Please give a line that can be used as a recommendation and help the persona choose a location for the activity."
+        )
+        try:
+            response = openai.ChatCompletion.create(
+                model = "gpt-3.5-turbo",
+                messages=[
+                    {"role":"system", "content":"You are a helpful assistant"},
+                    {"role":"user", "content":prompt}
+                ],
+                max_tokens = 150,
+            )
+            recommendation = response['choices'][0]['message']['content'].strip()
+            return recommendation
+        except openai.OpenAIError as e:
+            print(f"Error generating recommendation: {e}")
+            return "Error generating the recommendation. Please try again later."
+
+
+    def get_places_from_csv(self, file_path: str) -> List[dict[str, str]]:
+        places = []
+        df = pd.read_csv(file_path)
+        for _, row in df.iterrows():
+            places.append({
+                'Name': row['Name'],
+                'Coordinates': (row['Latitude'], row['Longitute'])
+            })
+        return places
+    
+    def generate_choice(self, activity_info: List, recommendation: str, file_path: str) -> dict[str, any]:
+        places = self.get_places_from_csv(file_path)
+        activities_str = f"Activity: {activity_info[0]}, Location Category: {activity_info[1]}, Time: {activity_info[2]}"
+        
+        # Creating the prompt
+        prompt = (
+        f"The persona has an activity info: {activities_str}. Based on the recommendation: '{recommendation}', "
+        f"please pick the best choice from the list of places in the attached CSV file. Provide the name, coordinates, "
+        f"and an estimated transport time in minutes.\n"
+        f"Return the choice in this format - Name, [latitude, longitude], minutes.\n"
+        f"The name should be a string, and the latitude and longitude should be floats. The minutes should be an integer.(do not include the word minutes, in the minutes, just the integer)\n"
+        f"Make sure not to output any other information other than just the choice, do not include any extra words"
+        f"You should always respond with the required data in the format i mentioned above without any additional information, text or explanation"
+        f"Make sure that you try to match the activity info to a choice that is most relevant to the activity info, it has to be of the same category and not something random"
+    )
+
+        for place in places:
+            prompt += f"{place['Name']}, Coordinates: ({place['Coordinates'][0]}, {place['Coordinates'][1]})\n"
+
+        # Call the OpenAI API to generate the choice
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=200,
+            )
+            choice = response['choices'][0]['message']['content'].strip()
+            
+            # getting the details from the llm response
+            # lines = choice.split(',')
+            # name = lines[0].strip()
+            # coordinates = lines[1].split(':')[1].strip().strip('()').split()
+            # transport_time = int(lines[2].split(':')[1].strip().split()[0])
+
+            # return {
+            #     name,
+            #     [float(coord) for coord in coordinates],
+            #     transport_time
+            # }
+            return choice
+
+        except openai.OpenAIError as e:
+            print(f"Error generating choice: {e}")
+            return {}
+
+
+
     ##########################################################################################
     # FOR MEMORY DELETION
     ##########################################################################################
     def calculate_information_density(self, summary: str):
-        #need to include a way to make it personal for each user and generate the values for the categories in persona generation 
+        #need to include a way to make it personal for each user and generate the values for the categories in persona generation
         """
         Calculates the weighted information density of a summary.
         Output would be a float
@@ -277,7 +380,7 @@ class MemoryModule:
         weighted_info_density = self.calculate_information_density(summary)
 
         # Normalizing the recency and frequency 
-        max_recency = 90 #last 3 months
+        max_recency = 30 #last 1 month
         normalized_recency = 1 - min(recency / max_recency, 1) # it is (1 -) because the more recent memory should have higher score
         
         max_frequency = max(self.memory_access_counter.get(persona_id, {}).values(), default=0)  
@@ -306,6 +409,22 @@ class MemoryModule:
                         self.daily_activities[persona_id].pop(date, None)
 
 
+#Testing the module 
+
+# Sample activities dictionary
+cata_act = {
+    "work": ["..."],
+    "go home": ["home"],
+    "eat": ["home", "restaurant", "cafe", "pub and bar", "food court"],
+    "sleep": ["home", "hotel"],
+    "shopping": ["grocery", "other shopping"],
+    "sports and exercise": ["gym", "field", "park"],
+    "leisure activities": ["home", "cinemas", "park", "stadium", "museum"],
+    "medical treatment": ["hospital", "clinic", "dentist"],
+    "education": ["university", "VET", "primary and secondary school", "preschool", "library", "other education"],
+    "religious activities": ["church"],
+    "trifles": ["legal and financial service", "automotive service", "health and beauty service"]
+}
 
 # Testing the MemoryModule
 if __name__ == "__main__":
@@ -314,71 +433,96 @@ if __name__ == "__main__":
     # Example activities for 7 days starting from today
     activities_dict = {
         "1": {
-            "01-07-2024": [["go to sleep", "(00:00, 06:58)", "home"], ["eat breakfast", "(07:24, 08:00)", "home"], ["go to work", "(09:00, 12:00)", "unsw campus"], ["lunch", "(12:30, 13:00)"], ["meeting", "(13:30, 15:00)"]],
-            "02-07-2024": [["go to sleep", "(00:00, 07:00)"], ["jogging", "(08:30, 09:30)"]],
-            "03-07-2024": [["go to sleep", "(00:00, 06:45)"], ["eat breakfast", "(07:15, 07:45)"], ["office work", "(08:30, 12:00)"], ["lunch", "(12:30, 13:00)"]],
-            "04-07-2024": [["go to sleep", "(00:00, 06:30)"], ["emails", "(08:00, 09:00)"], ["client call", "(11:30, 12:30)"], ["lunch", "(13:00, 13:30)"], ["project discussion", "(14:00, 16:00)"]],
-            "05-07-2024": [["go to sleep", "(00:00, 07:15)"], ["marketing research", "(09:00, 11:00)"], ["brainstorming session", "(14:00, 16:00)"], ["report writing", "(16:30, 18:00)"]],
-            "06-07-2024": [["go to sleep", "(00:00, 07:00)"], ["gardening", "(14:00, 16:00)"], ["dinner", "(18:00, 19:00)"]],
-            "07-07-2024": [["go to sleep", "(00:00, 06:45)"], ["eat breakfast", "(07:15, 07:45)"], ["relaxing", "(08:00, 09:00)"], ["watch movie", "(10:00, 12:00)"], ["dinner", "(18:00, 19:00)"]]
+            "01-07-2024": [["sports and exercise", "Gym", ["19:21", "20:02"]], ["eat breakfast", "home", ["07:24", "08:00"]], ["go to work", "university", ["09:00", "12:00"]]],
+            "02-07-2024": [["go to sleep", "home", ["00:00", "07:00"]], ["jogging", "gym", ["08:30", "09:30"]]],
+            "03-07-2024": [["go to sleep", "home", ["00:00", "06:45"]], ["eat breakfast", "home", ["07:15", "07:45"]], ["office work", "university", ["08:30", "12:00"]]],
+            "04-07-2024": [["go to sleep", "home", ["00:00", "06:30"]], ["emails", "home", ["08:00", "09:00"]], ["client call", "home", ["11:30", "12:30"]]],
+            "05-07-2024": [["go to sleep", "home", ["00:00", "07:15"]], ["marketing research", "university", ["09:00", "11:00"]], ["brainstorming session", "university", ["14:00", "16:00"]]],
+            "06-07-2024": [["go to sleep", "home", ["00:00", "07:00"]], ["gardening", "home", ["14:00", "16:00"]], ["dinner", "restaurant", ["18:00", "19:00"]]],
+            "07-07-2024": [["go to sleep", "home", ["00:00", "06:45"]], ["eat breakfast", "home", ["07:15", "07:45"]], ["relaxing", "home", ["08:00", "09:00"]], ["watch movie", "cinemas", ["10:00", "12:00"]]]
         },
         "2": {
-            "01-07-2024": [["sleep", "(23:00, 06:00)"], ["exercise", "(06:30, 07:30)"]],
-            "02-07-2024": [["sleep", "(23:00, 06:00)"], ["breakfast", "(08:00, 08:30)"]],
-            "03-07-2024": [["sleep", "(23:00, 06:00)"], ["online meeting", "(14:00, 15:00)"]],
+            "01-07-2024": [["sleep", "home", ["23:00", "06:00"]], ["exercise", "gym", ["06:30", "07:30"]]],
+            "02-07-2024": [["sleep", "home", ["23:00", "06:00"]], ["eat breakfast", "cafe", ["08:00", "08:30"]]],
+            "03-07-2024": [["sleep", "home", ["23:00", "06:00"]], ["online meeting", "home", ["14:00", "15:00"]]],
         },
         "3": {
-            "01-07-2024": [["sleep", "(22:00, 06:00)"], ["morning run", "(06:30, 07:00)"]],
-            "02-07-2024": [["sleep", "(22:00, 06:00)"], ["breakfast", "(07:30, 08:00)"]],
-            "03-07-2024": [["sleep", "(22:00, 06:00)"], ["work", "(09:00, 17:00)"]],
+            "01-07-2024": [["sleep", "home", ["22:00", "06:00"]], ["morning run", "park", ["06:30", "07:00"]]],
+            "02-07-2024": [["sleep", "home", ["22:00", "06:00"]], ["eat breakfast", "home", ["07:30", "08:00"]]],
+            "03-07-2024": [["sleep", "home", ["22:00", "06:00"]], ["work", "office", ["09:00", "17:00"]]],
         },
         "4": {
-            "01-07-2024": [["sleep", "(23:00, 07:00)"], ["yoga", "(07:30, 08:00)"]],
-            "02-07-2024": [["sleep", "(23:00, 07:00)"], ["breakfast", "(08:30, 09:00)"]],
-            "03-07-2024": [["sleep", "(23:00, 07:00)"], ["work", "(10:00, 16:00)"]],
+            "01-07-2024": [["sleep", "home", ["23:00", "07:00"]], ["yoga", "gym", ["07:30", "08:00"]]],
+            "02-07-2024": [["sleep", "home", ["23:00", "07:00"]], ["eat breakfast", "cafe", ["08:30", "09:00"]]],
+            "03-07-2024": [["sleep", "home", ["23:00", "07:00"]], ["work", "university", ["10:00", "16:00"]]],
         }
     }
-
+    
     # Storing activities and generating summaries for each day
     memory_module.store_daily_activities(activities_dict)
     for persona_id, dates in activities_dict.items():
         for date in dates.keys():
             memory_module.summarize_day(persona_id, date)
-            print(f"Summary for persona {persona_id} on {date}: {memory_module.summaries[persona_id][date]}")
+            if date in memory_module.summaries[persona_id]:  # Check if the summary was successfully generated
+                print(f"Summary for persona {persona_id} on {date}: {memory_module.summaries[persona_id][date]}")
+            else:
+                print(f"Summary for persona {persona_id} on {date} was not generated.")
             print("\n")
             
-            # Check if 7 days have passed to generate a weekly summary
+            # Checking if 7 days have passed to generate a weekly summary
             if memory_module.day_counters[persona_id] % 7 == 0:
                 memory_module.summarize_week(persona_id, date)
 
-    # Check the generated weekly summary
-    week_number = datetime.strptime("07-07-2024", '%d-%m-%Y').isocalendar()[1]
+    # Check the generated weekly summary for each persona
+    most_recent_date_str = max(date for persona in activities_dict.values() for date in persona.keys())
+    week_number = datetime.strptime(most_recent_date_str, '%d-%m-%Y').isocalendar()[1]
+
     for persona_id in activities_dict.keys():
-        # Debugging statement
-        print(f"Week number: {week_number}")
-        if week_number in memory_module.weekly_summaries.get(persona_id, {}):
+        if persona_id in memory_module.weekly_summaries and week_number in memory_module.weekly_summaries[persona_id]:
             print(f"Weekly summary for persona {persona_id} for week {week_number}: {memory_module.weekly_summaries[persona_id][week_number]}")
         else:
-            print(f"No weekly summary found for persona {persona_id} for week {week_number}")
+            print(f"Weekly summary for persona {persona_id} for week {week_number} was not generated.")
         print("\n")
-    
-    # Example: Generating and checking the monthly summary
-    end_date_str = "07-07-2024"  # Assume 7 days have passed
+
+    # Generating and checking the monthly summary
+    end_date_str = "07-07-2024"  # assume this is the date that is passed on to the summarize month function to generate the monthly summary for
     for persona_id in activities_dict.keys():
         memory_module.summarize_month(persona_id, end_date_str)
         month_year = datetime.strptime(end_date_str, '%d-%m-%Y').strftime('%m-%Y')
-        print(f"Monthly summary for persona {persona_id} for {month_year}: {memory_module.monthly_summaries[persona_id][month_year]}")
+        if month_year in memory_module.monthly_summaries[persona_id]:  # Check if the monthly summary was generated
+            print(f"Monthly summary for persona {persona_id} for {month_year}: {memory_module.monthly_summaries[persona_id][month_year]}")
+        else:
+            print(f"Monthly summary for persona {persona_id} for {month_year} was not generated.")
         print("\n")
-    
-    # Example: Retrieving historical tasks based on intention
-    intention = "eat breakfast"
+
+    # Example: Retrieving historical tasks based on location category and intention
     for persona_id in activities_dict.keys():
-        tasks = memory_module.retrieve_tasks_by_intention(persona_id, intention)
-        print(f"Historical tasks for persona {persona_id} with intention '{intention}': {tasks}")
-    
+        activity_info = ["shopping", "grocery", ["06:30", "07:30"]]
+        recommendation = memory_module.generate_recommendation(persona_id, activity_info)
+        print(f"Recommendation for persona {persona_id} with activity info '{activity_info}': {recommendation}")
+        print("\n")
+
+        choice = memory_module.generate_choice(activity_info, recommendation, 'around_unsw.csv')
+        print(f"Choice for persona {persona_id} with activity info '{activity_info}': {choice}")
+        print("\n")
+
     # Example: Deleting less important information
     memory_module.deleting_memory()
     for persona_id in activities_dict.keys():
         print(f"Summaries for persona {persona_id} after deletion: {memory_module.summaries[persona_id]}")
 
 
+    # def retrieve_activities_by_location(self, persona_id: str, location_category: str, intention: str):
+    #     """
+    #     Retrieves historical activities based on a specific location category and intention.
+    #     sample input: memory_module.retrieve_activities_by_location("1", "eat", "eat breakfast")
+    #     """
+    #     global cata_act
+    #     locations = cata_act.get(location_category, [])
+    #     relevant_activities = []
+
+    #     for date, activities in self.daily_activities.get(persona_id, {}).items():
+    #         for activity in activities:
+    #             if activity[0] == intention and activity[1] in locations:
+    #                 relevant_activities.append(f"{activity[0]} at {activity[1]} on {date} during {activity[2][0]} to {activity[2][1]}")
+    #     return relevant_activities
