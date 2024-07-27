@@ -34,7 +34,7 @@ class MemoryModule:
         # dict[str(persona id), dict[str, int](dict with the key as the date and the value is the number of the times the memory is accessed)]
 
         #  pre defined threshold 
-        self.memory_threshold = 0 
+        self.memory_threshold = 0.5 
         #YET TO DECIDE THE VALUE
 
         # Loading the spaCy model
@@ -266,10 +266,17 @@ class MemoryModule:
             return "Error generating the recommendation. Please try again later."
 
 
-    def get_places_from_csv(self, file_path: str) -> List[dict[str, str]]:
+    def get_places_from_csv(self, file_path: str, activity_info: List) -> List[dict[str, str]]:
         places = []
         df = pd.read_csv(file_path)
-        for _, row in df.iterrows():
+        location_category = activity_info[1].lower()
+
+        df['Category'] = df['Category'].str.lower()
+
+        relevant_places = []
+        relevant_places = df[df['Category'] == location_category]
+
+        for _, row in relevant_places.iterrows():
             places.append({
                 'Name': row['Name'],
                 'Coordinates': (row['Latitude'], row['Longitute'])
@@ -277,7 +284,7 @@ class MemoryModule:
         return places
     
     def generate_choice(self, activity_info: List, recommendation: str, file_path: str) -> dict[str, any]:
-        places = self.get_places_from_csv(file_path)
+        places = self.get_places_from_csv(file_path, activity_info)
         activities_str = f"Activity: {activity_info[0]}, Location Category: {activity_info[1]}, Time: {activity_info[2]}"
         
         # Creating the prompt
@@ -288,8 +295,8 @@ class MemoryModule:
         f"Return the choice in this format - Name, [latitude, longitude], minutes.\n"
         f"The name should be a string, and the latitude and longitude should be floats. The minutes should be an integer.(do not include the word minutes, in the minutes, just the integer)\n"
         f"Make sure not to output any other information other than just the choice, do not include any extra words"
-        f"You should always respond with the required data in the format i mentioned above without any additional information, text or explanation"
-        f"Make sure that you try to match the activity info to a choice that is most relevant to the activity info, it has to be of the same category and not something random"
+        f"You should always respond with the required data in the format i mentioned above without any additional information, text or explanation.\n"
+        f"The following is the location dataset you can pick from: \n"
     )
 
         for place in places:
@@ -306,19 +313,15 @@ class MemoryModule:
                 max_tokens=200,
             )
             choice = response['choices'][0]['message']['content'].strip()
-            
-            # getting the details from the llm response
-            # lines = choice.split(',')
-            # name = lines[0].strip()
-            # coordinates = lines[1].split(':')[1].strip().strip('()').split()
-            # transport_time = int(lines[2].split(':')[1].strip().split()[0])
+        
+            while not choice[-1].isdigit():
+                choice = choice[:-1]
 
-            # return {
-            #     name,
-            #     [float(coord) for coord in coordinates],
-            #     transport_time
-            # }
-            return choice
+            comma_idx = choice.find(',')
+            name = '"' + choice[:comma_idx] + '"'
+            choice = "[" + name + choice[comma_idx:] + "]"
+            res = json.loads(choice)
+            return res
 
         except openai.OpenAIError as e:
             print(f"Error generating choice: {e}")
@@ -380,7 +383,7 @@ class MemoryModule:
         weighted_info_density = self.calculate_information_density(summary)
 
         # Normalizing the recency and frequency 
-        max_recency = 30 #last 1 month
+        max_recency = 90 #last 3 months
         normalized_recency = 1 - min(recency / max_recency, 1) # it is (1 -) because the more recent memory should have higher score
         
         max_frequency = max(self.memory_access_counter.get(persona_id, {}).values(), default=0)  
@@ -410,8 +413,6 @@ class MemoryModule:
 
 
 #Testing the module 
-
-# Sample activities dictionary
 cata_act = {
     "work": ["..."],
     "go home": ["home"],
@@ -512,17 +513,6 @@ if __name__ == "__main__":
         print(f"Summaries for persona {persona_id} after deletion: {memory_module.summaries[persona_id]}")
 
 
-    # def retrieve_activities_by_location(self, persona_id: str, location_category: str, intention: str):
-    #     """
-    #     Retrieves historical activities based on a specific location category and intention.
-    #     sample input: memory_module.retrieve_activities_by_location("1", "eat", "eat breakfast")
-    #     """
-    #     global cata_act
-    #     locations = cata_act.get(location_category, [])
-    #     relevant_activities = []
 
-    #     for date, activities in self.daily_activities.get(persona_id, {}).items():
-    #         for activity in activities:
-    #             if activity[0] == intention and activity[1] in locations:
-    #                 relevant_activities.append(f"{activity[0]} at {activity[1]} on {date} during {activity[2][0]} to {activity[2][1]}")
-    #     return relevant_activities
+
+
