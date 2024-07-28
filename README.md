@@ -9,3 +9,11 @@ Summarize Activities: Automatically generate daily, weekly, and monthly summarie
 Retrieve Historical Activities: Access past activities based on specific criteria to understand patterns and behaviors.
 Generate Personalized Recommendations: Offer tailored recommendations by analyzing past activities and preferences.
 Memory Management: Efficiently delete less important memories based on a calculated importance score to maintain relevant data.
+
+
+Purpose:
+
+To track and store activities for multiple personas.
+To generate summaries of these activities over different periods (daily, weekly, and monthly).
+To provide personalized recommendations based on past activities.
+To manage memory by retaining important information and discarding less relevant data.
