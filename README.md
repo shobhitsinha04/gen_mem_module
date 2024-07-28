@@ -3,6 +3,8 @@
 
 This project implements a Memory Module designed to manage and analyze daily, weekly, and monthly activities for various personas. It leverages the capabilities of OpenAI's GPT-3.5-turbo to generate summaries and recommendations, enhancing the user experience by providing insights based on historical activities.
 
+_________________________________________________________________________________________________________________________________________________________________________________
+
 **Features**
 
 
